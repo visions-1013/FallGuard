@@ -15,6 +15,7 @@ htmlcov/
 *.avi
 *.mov
 *.mkv
+recordings/
 *.pt
 *.onnx
 data/samples/*

@@ -1,0 +1,10 @@
+name: fallguard
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - numpy
+      - opencv-python
+      - streamlit
+      - pytest
+      - ultralytics

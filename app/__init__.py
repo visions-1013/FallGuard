@@ -1,0 +1,1 @@
+"""FallGuard Streamlit application package."""

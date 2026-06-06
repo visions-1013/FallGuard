@@ -13,22 +13,7 @@ import streamlit as st
 from fallguard.pipeline import FallGuardPipeline
 
 
-STATUS_MESSAGES = {
-    "unknown": "未获得可靠人体姿态",
-    "standing": "站立状态",
-    "sitting": "坐姿状态",
-    "moving": "正常移动",
-    "lying": "低姿态/主动躺下",
-    "fall": "检测到摔倒",
-}
-
 RECORDING_SAMPLE_INTERVAL_SECONDS = 1.0
-
-
-def status_notice(state: str) -> dict[str, str]:
-    message = STATUS_MESSAGES.get(state, "未知状态")
-    level = "error" if state == "fall" else "info"
-    return {"title": "当前状态", "state": state, "message": message, "level": level}
 
 
 def build_event(frame_index: int, state: str, summary: str) -> dict[str, str]:
@@ -67,6 +52,15 @@ def build_recording_session(
 @st.cache_resource
 def load_pipeline() -> FallGuardPipeline:
     return FallGuardPipeline()
+
+
+def ensure_pipeline_loaded(message_slot: Any, loader: Any = load_pipeline) -> FallGuardPipeline:
+    message_slot.info("正在加载 YOLO-Pose，请稍候...")
+    return loader()
+
+
+def should_show_preview_message(running: bool) -> bool:
+    return not running
 
 
 def ensure_session_state() -> None:
@@ -250,15 +244,8 @@ def frame_to_rgb(frame: Any) -> Any:
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
-def render_status(state: str, summary: str = "") -> None:
-    notice = status_notice(state)
-    label = f"{notice['message']} ({notice['state']})"
-    if notice["level"] == "error":
-        st.error(label)
-    else:
-        st.info(label)
-    if summary:
-        st.caption(summary)
+def render_detection_messages() -> Any:
+    return st.empty()
 
 
 def render_history(events: list[dict[str, str]]) -> None:
@@ -307,7 +294,7 @@ def render_metrics(metric_slot: Any) -> None:
 def process_next_frame(
     source: int | str | Path,
     frame_slot: Any,
-    status_slot: Any,
+    message_slot: Any,
     metric_slot: Any,
     history_slot: Any,
 ) -> None:
@@ -318,13 +305,13 @@ def process_next_frame(
         capture = open_camera_capture(int(source))
 
     if capture is None:
-        status_slot.error("无法打开输入源，请先完成预览检查。")
+        message_slot.error("无法打开输入源，请先完成预览检查。")
         st.session_state["running"] = False
         finalize_recording_session()
         return
 
     if not capture.isOpened():
-        status_slot.error("无法打开输入源，请先完成预览检查。")
+        message_slot.error("无法打开输入源，请先完成预览检查。")
         st.session_state["running"] = False
         if not is_video_file:
             finalize_recording_session()
@@ -338,8 +325,7 @@ def process_next_frame(
     fps = source_fps(capture)
     st.session_state["input_fps"] = fps
 
-    with st.spinner("正在加载 YOLO-Pose 并开始本地检测..."):
-        pipeline = load_pipeline()
+    pipeline = load_pipeline()
 
     ok, frame = capture.read()
     if is_video_file:
@@ -351,7 +337,7 @@ def process_next_frame(
         st.session_state["running"] = False
         st.session_state["video_finished"] = is_video_file
         message = "视频已播放完。" if is_video_file else "没有读取到有效帧。"
-        status_slot.info(message)
+        message_slot.info(message)
         render_metrics(metric_slot)
         return
 
@@ -365,9 +351,6 @@ def process_next_frame(
         record_annotated_frame(result.annotated_frame)
     st.session_state["last_frame_rgb"] = annotated_rgb
     frame_slot.image(annotated_rgb, channels="RGB", use_container_width=True)
-
-    with status_slot.container():
-        render_status(result.state, result.summary)
 
     events = st.session_state["events"]
     last_state = events[-1]["状态"] if events else ""
@@ -421,6 +404,7 @@ def main() -> None:
     st.caption("本地视频/摄像头输入，YOLO-Pose 姿态估计，状态标签保持英文，页面交互使用中文。")
 
     source_mode, camera_index, uploaded_file, preview_clicked, start_clicked, pause_clicked, clear_clicked = render_sidebar()
+    running = st.session_state.get("running", False)
 
     if clear_clicked:
         reset_detection_state()
@@ -437,8 +421,7 @@ def main() -> None:
             frame_slot.image(st.session_state["last_frame_rgb"], channels="RGB", use_container_width=True)
 
     with right:
-        st.subheader("当前状态")
-        status_slot = st.empty()
+        message_slot = render_detection_messages()
         metric_slot = st.empty()
         render_metrics(metric_slot)
         history_tab, recording_tab = st.tabs(["状态历史", "录像回放"])
@@ -454,50 +437,53 @@ def main() -> None:
     if source_mode == "摄像头":
         source = camera_index
         reset_runtime_for_new_source(f"camera:{camera_index}")
-        if preview_clicked:
+        if preview_clicked and should_show_preview_message(running) and not start_clicked:
             ok, frame, error = read_preview_frame(source)
             if ok:
                 frame_slot.image(frame_to_rgb(frame), channels="RGB", use_container_width=True)
-                status_slot.success(f"摄像头 {camera_index} 可用。确认画面后可以开始检测。")
+                message_slot.success(f"摄像头 {camera_index} 可用。确认画面后可以开始检测。")
             else:
-                status_slot.error(error)
+                message_slot.error(error)
     else:
         if uploaded_file is None:
-            status_slot.info("请选择左侧“上传本地视频”。上传后会先显示首帧预览。")
+            if should_show_preview_message(running):
+                message_slot.info("请选择左侧“上传本地视频”。上传后会先显示首帧预览。")
         else:
             source = save_uploaded_video(uploaded_file)
             reset_runtime_for_new_source(f"video:{st.session_state['uploaded_video_key']}")
-            st.sidebar.success(f"已选择：{uploaded_file.name}")
-            st.sidebar.caption(f"文件大小：{uploaded_file.size / 1024 / 1024:.2f} MB")
-            ok, frame, error = read_preview_frame(source)
-            if ok:
-                frame_slot.image(frame_to_rgb(frame), channels="RGB", use_container_width=True)
-                status_slot.success("视频首帧读取成功。确认画面后可以开始检测。")
-            else:
-                status_slot.error(error)
+            if should_show_preview_message(running) and not start_clicked:
+                st.sidebar.success(f"已选择：{uploaded_file.name}")
+                st.sidebar.caption(f"文件大小：{uploaded_file.size / 1024 / 1024:.2f} MB")
+                ok, frame, error = read_preview_frame(source)
+                if ok:
+                    frame_slot.image(frame_to_rgb(frame), channels="RGB", use_container_width=True)
+                    message_slot.success("视频首帧读取成功。确认画面后可以开始检测。")
+                else:
+                    message_slot.error(error)
 
     if start_clicked:
         if source is None:
-            status_slot.warning("请先选择并预览输入源。")
+            message_slot.warning("请先选择并预览输入源。")
             return
         if source_mode == "摄像头":
             if open_camera_capture(camera_index) is None:
-                status_slot.error("无法打开摄像头，请检查编号或权限。")
+                message_slot.error("无法打开摄像头，请检查编号或权限。")
                 st.session_state["running"] = False
                 return
             start_recording_session()
+        ensure_pipeline_loaded(message_slot)
         st.session_state["running"] = True
         st.session_state["video_finished"] = False
 
     if st.session_state.get("video_finished", False):
-        status_slot.info("视频已播放完。")
+        message_slot.info("视频已播放完。")
 
     if st.session_state.get("running", False):
         if source is None:
             st.session_state["running"] = False
-            status_slot.warning("请先选择并预览输入源。")
+            message_slot.warning("请先选择并预览输入源。")
             return
-        process_next_frame(source, frame_slot, status_slot, metric_slot, history_slot)
+        process_next_frame(source, frame_slot, message_slot, metric_slot, history_slot)
 
 
 if __name__ == "__main__":

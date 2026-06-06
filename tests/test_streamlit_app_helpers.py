@@ -1,16 +1,18 @@
 from datetime import datetime
 from pathlib import Path
 
+from app import streamlit_app
 from app.streamlit_app import (
     build_event,
     build_recording_session,
     calculate_processing_fps,
+    ensure_pipeline_loaded,
     recording_filename,
     release_camera_capture,
     reset_detection_state,
     should_record_frame,
+    should_show_preview_message,
     source_fps,
-    status_notice,
 )
 
 
@@ -22,26 +24,51 @@ class ReleasableCapture:
         self.released = True
 
 
-def test_status_notice_keeps_english_state_and_chinese_message():
-    notice = status_notice("standing")
-
-    assert notice["state"] == "standing"
-    assert notice["title"] == "当前状态"
-    assert "站立" in notice["message"]
-
-
-def test_status_notice_marks_fall_as_alert():
-    notice = status_notice("fall")
-
-    assert notice["state"] == "fall"
-    assert notice["level"] == "error"
-    assert "检测到摔倒" in notice["message"]
-
-
 def test_build_event_uses_chinese_columns_and_english_state():
     event = build_event(12, "lying", "angle=80.0")
 
     assert event == {"帧号": "12", "状态": "lying", "说明": "angle=80.0"}
+
+
+def test_ensure_pipeline_loaded_shows_message_before_loading():
+    calls = []
+
+    class StatusSlot:
+        def info(self, message):
+            calls.append(("info", message))
+
+    expected_pipeline = object()
+
+    def loader():
+        calls.append(("loader", "called"))
+        return expected_pipeline
+
+    pipeline = ensure_pipeline_loaded(StatusSlot(), loader=loader)
+
+    assert pipeline is expected_pipeline
+    assert calls == [("info", "正在加载 YOLO-Pose，请稍候..."), ("loader", "called")]
+
+
+def test_should_show_preview_message_only_when_not_running():
+    assert should_show_preview_message(running=False) is True
+    assert should_show_preview_message(running=True) is False
+
+
+def test_render_detection_messages_only_keeps_non_status_subheaders(monkeypatch):
+    subheaders = []
+    empty_calls = []
+
+    class Slot:
+        pass
+
+    monkeypatch.setattr(streamlit_app.st, "subheader", lambda label: subheaders.append(label))
+    monkeypatch.setattr(streamlit_app.st, "empty", lambda: empty_calls.append("empty") or Slot())
+
+    message_slot = streamlit_app.render_detection_messages()
+
+    assert message_slot is not None
+    assert "当前状态" not in subheaders
+    assert empty_calls == ["empty"]
 
 
 def test_calculate_processing_fps_handles_zero_elapsed_time():

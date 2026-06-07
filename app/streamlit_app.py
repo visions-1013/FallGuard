@@ -11,6 +11,14 @@ import cv2
 import streamlit as st
 
 from fallguard.pipeline import FallGuardPipeline
+from fallguard.ui.replay import (
+    append_recording_fall_point,
+    build_fall_intervals,
+    build_recording_session,
+    recording_filename,
+    recordings_dir,
+    save_recording_markers,
+)
 
 
 RECORDING_SAMPLE_INTERVAL_SECONDS = 1.0
@@ -20,33 +28,8 @@ def build_event(frame_index: int, state: str, summary: str) -> dict[str, str]:
     return {"帧号": str(frame_index), "状态": state, "说明": summary}
 
 
-def recordings_dir() -> Path:
-    return Path("recordings")
-
-
-def recording_filename(started_at: datetime) -> str:
-    return f"fallguard_{started_at:%Y%m%d_%H%M%S}.mp4"
-
-
 def should_record_frame(now: float, last_recorded_at: float, interval_seconds: float) -> bool:
     return interval_seconds <= 0 or last_recorded_at <= 0 or now - last_recorded_at >= interval_seconds
-
-
-def build_recording_session(
-    path: Path,
-    started_at: datetime,
-    ended_at: datetime,
-    frame_count: int,
-) -> dict[str, str]:
-    duration = max((ended_at - started_at).total_seconds(), 0.0)
-    return {
-        "开始时间": started_at.strftime("%Y-%m-%d %H:%M:%S"),
-        "结束时间": ended_at.strftime("%Y-%m-%d %H:%M:%S"),
-        "时长(秒)": f"{duration:.1f}",
-        "帧数": str(frame_count),
-        "文件名": path.name,
-        "文件路径": str(path),
-    }
 
 
 @st.cache_resource
@@ -80,6 +63,7 @@ def ensure_session_state() -> None:
     st.session_state.setdefault("recording_started_at", None)
     st.session_state.setdefault("recording_last_saved_at", 0.0)
     st.session_state.setdefault("recorded_frame_count", 0)
+    st.session_state.setdefault("recording_fall_points", [])
     st.session_state.setdefault("camera_capture", None)
     st.session_state.setdefault("camera_source_index", None)
 
@@ -111,6 +95,7 @@ def reset_detection_state(state: MutableMapping[str, Any] | None = None) -> None
     target["recording_started_at"] = None
     target["recording_last_saved_at"] = 0.0
     target["recorded_frame_count"] = 0
+    target["recording_fall_points"] = []
     target["camera_capture"] = None
     target["camera_source_index"] = None
 
@@ -166,6 +151,7 @@ def start_recording_session() -> None:
     st.session_state["recording_started_at"] = started_at
     st.session_state["recording_last_saved_at"] = 0.0
     st.session_state["recorded_frame_count"] = 0
+    st.session_state["recording_fall_points"] = []
 
 
 def finalize_recording_session() -> None:
@@ -174,15 +160,28 @@ def finalize_recording_session() -> None:
     started_at = st.session_state.get("recording_started_at")
     frame_count = int(st.session_state.get("recorded_frame_count", 0))
     if path_text and started_at is not None and frame_count > 0:
-        session = build_recording_session(Path(path_text), started_at, datetime.now(), frame_count)
+        path = Path(path_text)
+        output_fps = max(1.0 / RECORDING_SAMPLE_INTERVAL_SECONDS, 1.0)
+        fall_points = list(st.session_state.get("recording_fall_points", []))
+        markers = {
+            "video_file": path.name,
+            "frame_count": frame_count,
+            "fps": output_fps,
+            "duration_seconds": round(frame_count / output_fps, 3),
+            "fall_points": fall_points,
+            "fall_intervals": build_fall_intervals(fall_points, output_fps),
+        }
+        save_recording_markers(path, markers)
+        session = build_recording_session(path, started_at, datetime.now(), frame_count)
         st.session_state["recorded_sessions"].append(session)
     st.session_state["recording_path"] = ""
     st.session_state["recording_started_at"] = None
     st.session_state["recording_last_saved_at"] = 0.0
     st.session_state["recorded_frame_count"] = 0
+    st.session_state["recording_fall_points"] = []
 
 
-def record_annotated_frame(frame: Any) -> None:
+def record_annotated_frame(frame: Any, state: str = "", summary: str = "") -> None:
     path_text = st.session_state.get("recording_path", "")
     if not path_text:
         return
@@ -192,10 +191,10 @@ def record_annotated_frame(frame: Any) -> None:
     if not should_record_frame(now, last_saved_at, RECORDING_SAMPLE_INTERVAL_SECONDS):
         return
 
+    output_fps = max(1.0 / RECORDING_SAMPLE_INTERVAL_SECONDS, 1.0)
     writer = st.session_state.get("recording_writer")
     if writer is None:
         height, width = frame.shape[:2]
-        output_fps = max(1.0 / RECORDING_SAMPLE_INTERVAL_SECONDS, 1.0)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(path_text, fourcc, output_fps, (width, height))
         if not writer.isOpened():
@@ -203,9 +202,11 @@ def record_annotated_frame(frame: Any) -> None:
             return
         st.session_state["recording_writer"] = writer
 
+    recorded_frame_index = int(st.session_state.get("recorded_frame_count", 0))
     writer.write(frame)
+    append_recording_fall_point(st.session_state, recorded_frame_index, state, summary, output_fps)
     st.session_state["recording_last_saved_at"] = now
-    st.session_state["recorded_frame_count"] = int(st.session_state.get("recorded_frame_count", 0)) + 1
+    st.session_state["recorded_frame_count"] = recorded_frame_index + 1
 
 
 def save_uploaded_video(uploaded_file: Any) -> Path:
@@ -254,29 +255,6 @@ def render_history(events: list[dict[str, str]]) -> None:
         st.dataframe(events, use_container_width=True, hide_index=True)
     else:
         st.caption("暂无事件。开始检测后会记录状态变化。")
-
-
-def render_recordings() -> None:
-    st.subheader("录像回放")
-    sessions = st.session_state.get("recorded_sessions", [])
-    if st.button("清空录像历史", use_container_width=True, disabled=not sessions):
-        st.session_state["recorded_sessions"] = []
-        st.rerun()
-
-    if not sessions:
-        st.caption("暂无录像。摄像头开始检测后，暂停时会保存本段标注视频。")
-        return
-
-    st.dataframe(sessions, use_container_width=True, hide_index=True)
-    for index, session in enumerate(reversed(sessions), start=1):
-        title = f"{session['开始时间']} - {session['文件名']}"
-        with st.expander(title):
-            st.caption(f"时长 {session['时长(秒)']} 秒，采样帧数 {session['帧数']}。")
-            path = Path(session["文件路径"])
-            if path.exists():
-                st.video(path)
-            else:
-                st.warning("录像文件不存在，可能已被手动删除。")
 
 
 def render_metrics(metric_slot: Any) -> None:
@@ -348,7 +326,7 @@ def process_next_frame(
     st.session_state["processing_fps"] = calculate_processing_fps(elapsed)
     annotated_rgb = frame_to_rgb(result.annotated_frame)
     if not is_video_file:
-        record_annotated_frame(result.annotated_frame)
+        record_annotated_frame(result.annotated_frame, state=result.state, summary=result.summary)
     st.session_state["last_frame_rgb"] = annotated_rgb
     frame_slot.image(annotated_rgb, channels="RGB", use_container_width=True)
 
@@ -424,13 +402,9 @@ def main() -> None:
         message_slot = render_detection_messages()
         metric_slot = st.empty()
         render_metrics(metric_slot)
-        history_tab, recording_tab = st.tabs(["状态历史", "录像回放"])
-        with history_tab:
-            history_slot = st.empty()
-            with history_slot.container():
-                render_history(st.session_state["events"])
-        with recording_tab:
-            render_recordings()
+        history_slot = st.empty()
+        with history_slot.container():
+            render_history(st.session_state["events"])
 
     source: int | Path | None = None
 

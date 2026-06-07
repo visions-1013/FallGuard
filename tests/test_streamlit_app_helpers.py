@@ -1,13 +1,25 @@
 from datetime import datetime
 from pathlib import Path
 
+from fallguard.ui import replay
+from fallguard.ui.replay import (
+    append_recording_fall_point,
+    build_fall_intervals,
+    build_recording_session,
+    build_recording_session_from_file,
+    load_recording_markers,
+    load_recording_sessions,
+    recording_marker_path,
+    recording_video_files,
+    recording_filename,
+    save_recording_markers,
+)
+
 from app import streamlit_app
 from app.streamlit_app import (
     build_event,
-    build_recording_session,
     calculate_processing_fps,
     ensure_pipeline_loaded,
-    recording_filename,
     release_camera_capture,
     reset_detection_state,
     should_record_frame,
@@ -157,3 +169,147 @@ def test_build_recording_session_uses_chinese_fields():
         "文件名": "fallguard_20260605_080910.mp4",
         "文件路径": "recordings\\fallguard_20260605_080910.mp4",
     }
+
+
+def test_recording_video_files_reads_supported_files_in_time_order(tmp_path, monkeypatch):
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    older = recordings / "fallguard_20260605_080910.mp4"
+    newer = recordings / "fallguard_20260605_080920.MOV"
+    ignored = recordings / "notes.txt"
+    older.write_bytes(b"")
+    newer.write_bytes(b"")
+    ignored.write_text("not a video", encoding="utf-8")
+
+    monkeypatch.setattr(replay, "recordings_dir", lambda: recordings)
+
+    assert recording_video_files() == [older, newer]
+
+
+def test_build_recording_session_from_file_uses_filename_and_video_metadata(tmp_path, monkeypatch):
+    path = tmp_path / "recordings" / "fallguard_20260605_080910.mp4"
+    path.parent.mkdir()
+    path.write_bytes(b"video")
+
+    class Capture:
+        def isOpened(self):
+            return True
+
+        def get(self, property_id):
+            if property_id == replay.cv2.CAP_PROP_FRAME_COUNT:
+                return 25
+            if property_id == replay.cv2.CAP_PROP_FPS:
+                return 5
+            return 0
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(replay.cv2, "VideoCapture", lambda _path: Capture())
+
+    session = build_recording_session_from_file(path)
+
+    assert session == {
+        "开始时间": "2026-06-05 08:09:10",
+        "结束时间": "2026-06-05 08:09:15",
+        "时长(秒)": "5.0",
+        "帧数": "25",
+        "文件名": "fallguard_20260605_080910.mp4",
+        "文件路径": str(path),
+    }
+
+
+def test_load_recording_sessions_merges_disk_and_session_records(tmp_path, monkeypatch):
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    existing_path = recordings / "fallguard_20260605_080910.mp4"
+    new_path = recordings / "fallguard_20260605_080920.mp4"
+    existing_path.write_bytes(b"video")
+    new_path.write_bytes(b"video")
+
+    session_record = {
+        "开始时间": "2026-06-05 08:09:10",
+        "结束时间": "2026-06-05 08:09:12",
+        "时长(秒)": "2.0",
+        "帧数": "2",
+        "文件名": existing_path.name,
+        "文件路径": str(existing_path),
+    }
+
+    class Capture:
+        def __init__(self, path_text):
+            self.path_text = path_text
+
+        def isOpened(self):
+            return True
+
+        def get(self, property_id):
+            if property_id == replay.cv2.CAP_PROP_FRAME_COUNT:
+                return 10
+            if property_id == replay.cv2.CAP_PROP_FPS:
+                return 5
+            return 0
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(replay, "recordings_dir", lambda: recordings)
+    monkeypatch.setattr(replay.cv2, "VideoCapture", lambda path_text: Capture(path_text))
+
+    sessions = load_recording_sessions([session_record])
+
+    assert sessions[0] == session_record
+    assert sessions[1]["文件名"] == new_path.name
+    assert sessions[1]["文件路径"] == str(new_path)
+    assert len(sessions) == 2
+
+
+def test_recording_marker_path_uses_sidecar_json_name():
+    video_path = Path("recordings/fallguard_20260605_080910.mp4")
+
+    assert recording_marker_path(video_path) == Path("recordings/fallguard_20260605_080910.json")
+
+
+def test_save_and_load_recording_markers_round_trip(tmp_path):
+    video_path = tmp_path / "recordings" / "fallguard_20260605_080910.mp4"
+    markers = {
+        "video_file": video_path.name,
+        "frame_count": 3,
+        "fps": 1.0,
+        "duration_seconds": 3.0,
+        "fall_points": [{"frame": 1, "time_seconds": 1.0, "summary": "fall"}],
+        "fall_intervals": [{"start_frame": 1, "end_frame": 1, "start_seconds": 1.0, "end_seconds": 2.0}],
+    }
+
+    save_recording_markers(video_path, markers)
+
+    assert load_recording_markers(video_path) == markers
+
+
+def test_load_recording_markers_returns_none_when_sidecar_missing(tmp_path):
+    video_path = tmp_path / "recordings" / "fallguard_20260605_080910.mp4"
+
+    assert load_recording_markers(video_path) is None
+
+
+def test_build_fall_intervals_merges_consecutive_fall_points():
+    points = [
+        {"frame": 1, "time_seconds": 0.5, "summary": "fall a"},
+        {"frame": 2, "time_seconds": 1.0, "summary": "fall b"},
+        {"frame": 3, "time_seconds": 1.5, "summary": "fall c"},
+        {"frame": 7, "time_seconds": 3.5, "summary": "fall d"},
+    ]
+
+    assert build_fall_intervals(points, fps=2.0) == [
+        {"start_frame": 1, "end_frame": 3, "start_seconds": 0.5, "end_seconds": 2.0},
+        {"start_frame": 7, "end_frame": 7, "start_seconds": 3.5, "end_seconds": 4.0},
+    ]
+
+
+def test_append_recording_fall_point_keeps_only_fall_state():
+    state = {"recording_fall_points": []}
+
+    append_recording_fall_point(state, 0, "standing", "not fall", fps=1.0)
+    append_recording_fall_point(state, 1, "fall", "detected", fps=1.0)
+
+    assert state["recording_fall_points"] == [{"frame": 1, "time_seconds": 1.0, "summary": "detected"}]

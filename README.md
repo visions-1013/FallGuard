@@ -46,8 +46,11 @@ python -m pytest tests -q
 ## 启动 Streamlit 演示
 
 ```powershell
-streamlit run app/streamlit_app.py
+python -m streamlit run app/streamlit_app.py
 ```
+
+请先确认已经执行 `conda activate fallguard` 和 `python -m pip install -e .`。
+不要直接使用未激活环境下的裸 `streamlit run ...`，否则 Windows PATH 可能会调用 base 环境中的 Streamlit，导致找不到 `fallguard` 包。
 
 页面中可以选择电脑摄像头，也可以上传本地视频文件。视频不会上传到外部服务，推理和状态判断都在本地完成。
 项目会把 Ultralytics 配置写入本地 `.ultralytics/` 目录，避免写入用户 Roaming 目录导致权限问题。

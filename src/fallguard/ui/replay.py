@@ -14,6 +14,9 @@ import streamlit.components.v1 as components
 
 
 SUPPORTED_RECORDING_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
+BROWSER_PLAYABLE_MP4_CODECS = {"avc1", "h264"}
+H264_PLAYBACK_CODECS = ("avc1", "H264", "X264")
+WEBM_PLAYBACK_CODECS = ("VP80",)
 
 
 def recordings_dir() -> Path:
@@ -77,6 +80,17 @@ def read_video_metadata(path: Path) -> tuple[int, float]:
         frame_count = int(max(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0, 0))
         fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
         return frame_count, fps if fps > 0 else 0.0
+    finally:
+        capture.release()
+
+
+def read_video_codec(path: Path) -> str:
+    capture = cv2.VideoCapture(str(path))
+    try:
+        if not capture.isOpened():
+            return ""
+        fourcc_value = int(capture.get(cv2.CAP_PROP_FOURCC) or 0)
+        return "".join(chr((fourcc_value >> (8 * index)) & 0xFF) for index in range(4)).strip()
     finally:
         capture.release()
 
@@ -172,13 +186,110 @@ def _build_fall_interval(start_frame: int, end_frame: int, fps: float) -> dict[s
     }
 
 
+def resolve_replay_video_path(video_path: Path) -> Path:
+    if is_browser_playable_video(video_path):
+        return video_path
+
+    cached_path = fresh_playback_cache_path(video_path)
+    if cached_path is not None:
+        return cached_path
+
+    return transcode_for_browser_playback(video_path)
+
+
+def is_browser_playable_video(video_path: Path) -> bool:
+    suffix = video_path.suffix.lower()
+    if suffix == ".webm":
+        return True
+    if suffix != ".mp4":
+        return False
+    return read_video_codec(video_path).lower() in BROWSER_PLAYABLE_MP4_CODECS
+
+
+def playback_cache_path(video_path: Path, suffix: str = ".mp4") -> Path:
+    return video_path.parent / ".playback" / f"{video_path.stem}{suffix}"
+
+
+def fresh_playback_cache_path(video_path: Path) -> Path | None:
+    try:
+        source_mtime = video_path.stat().st_mtime
+    except OSError:
+        return None
+
+    for suffix in (".mp4", ".webm"):
+        candidate = playback_cache_path(video_path, suffix)
+        try:
+            if candidate.exists() and candidate.stat().st_size > 0 and candidate.stat().st_mtime >= source_mtime:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def transcode_for_browser_playback(video_path: Path) -> Path:
+    mp4_path = playback_cache_path(video_path, ".mp4")
+    if transcode_video(video_path, mp4_path, H264_PLAYBACK_CODECS):
+        return mp4_path
+
+    webm_path = playback_cache_path(video_path, ".webm")
+    if transcode_video(video_path, webm_path, WEBM_PLAYBACK_CODECS):
+        return webm_path
+
+    return video_path
+
+
+def transcode_video(source_path: Path, target_path: Path, codecs: tuple[str, ...]) -> bool:
+    capture = cv2.VideoCapture(str(source_path))
+    try:
+        if not capture.isOpened():
+            return False
+
+        ok, first_frame = capture.read()
+        if not ok:
+            return False
+
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        if fps <= 0:
+            fps = 30.0
+        height, width = first_frame.shape[:2]
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        for codec in codecs:
+            target_path.unlink(missing_ok=True)
+            writer = cv2.VideoWriter(
+                str(target_path),
+                cv2.VideoWriter_fourcc(*codec),
+                fps,
+                (width, height),
+            )
+            if not writer.isOpened():
+                writer.release()
+                continue
+
+            writer.write(first_frame)
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                writer.write(frame)
+            writer.release()
+            if target_path.exists() and target_path.stat().st_size > 0:
+                return True
+    finally:
+        capture.release()
+
+    target_path.unlink(missing_ok=True)
+    return False
+
+
 def render_replay_player(video_path: Path, markers: dict | None) -> None:
     if not video_path.exists():
         st.warning("录像文件不存在，可能已被手动删除。")
         return
 
-    video_data = base64.b64encode(video_path.read_bytes()).decode("ascii")
-    mime_type = video_mime_type(video_path)
+    replay_video_path = resolve_replay_video_path(video_path)
+    video_data = base64.b64encode(replay_video_path.read_bytes()).decode("ascii")
+    mime_type = video_mime_type(replay_video_path)
     duration = marker_duration_seconds(video_path, markers)
     intervals = markers.get("fall_intervals", []) if markers else []
     timeline_marks = build_timeline_marks(intervals, duration)
@@ -297,6 +408,8 @@ def render_replay_player(video_path: Path, markers: dict | None) -> None:
 
 def video_mime_type(video_path: Path) -> str:
     suffix = video_path.suffix.lower()
+    if suffix == ".webm":
+        return "video/webm"
     if suffix == ".mov":
         return "video/quicktime"
     if suffix == ".mkv":

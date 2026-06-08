@@ -22,6 +22,7 @@ from fallguard.ui.replay import (
 
 
 RECORDING_SAMPLE_INTERVAL_SECONDS = 1.0
+BROWSER_FRIENDLY_RECORDING_CODECS = ("avc1", "H264", "X264", "mp4v")
 
 
 def build_event(frame_index: int, state: str, summary: str) -> dict[str, str]:
@@ -63,6 +64,8 @@ def ensure_session_state() -> None:
     st.session_state.setdefault("recording_started_at", None)
     st.session_state.setdefault("recording_last_saved_at", 0.0)
     st.session_state.setdefault("recorded_frame_count", 0)
+    st.session_state.setdefault("recording_output_fps", 0.0)
+    st.session_state.setdefault("recording_sample_interval_seconds", RECORDING_SAMPLE_INTERVAL_SECONDS)
     st.session_state.setdefault("recording_fall_points", [])
     st.session_state.setdefault("camera_capture", None)
     st.session_state.setdefault("camera_source_index", None)
@@ -95,6 +98,8 @@ def reset_detection_state(state: MutableMapping[str, Any] | None = None) -> None
     target["recording_started_at"] = None
     target["recording_last_saved_at"] = 0.0
     target["recorded_frame_count"] = 0
+    target["recording_output_fps"] = 0.0
+    target["recording_sample_interval_seconds"] = RECORDING_SAMPLE_INTERVAL_SECONDS
     target["recording_fall_points"] = []
     target["camera_capture"] = None
     target["camera_source_index"] = None
@@ -141,16 +146,38 @@ def open_camera_capture(camera_index: int) -> Any | None:
     return capture
 
 
-def start_recording_session() -> None:
+def default_recording_fps() -> float:
+    return max(1.0 / RECORDING_SAMPLE_INTERVAL_SECONDS, 1.0)
+
+
+def create_recording_writer(path_text: str, output_fps: float, size: tuple[int, int]) -> Any | None:
+    for codec in BROWSER_FRIENDLY_RECORDING_CODECS:
+        fourcc = cv2.VideoWriter_fourcc(*codec)
+        writer = cv2.VideoWriter(path_text, fourcc, output_fps, size)
+        if writer.isOpened():
+            return writer
+        writer.release()
+    return None
+
+
+def start_recording_session(
+    output_fps: float | None = None,
+    sample_interval_seconds: float = RECORDING_SAMPLE_INTERVAL_SECONDS,
+) -> None:
     started_at = datetime.now()
     output_dir = recordings_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / recording_filename(started_at)
+    safe_output_fps = float(output_fps or 0.0)
+    if safe_output_fps <= 0:
+        safe_output_fps = default_recording_fps()
     st.session_state["recording_writer"] = None
     st.session_state["recording_path"] = str(path)
     st.session_state["recording_started_at"] = started_at
     st.session_state["recording_last_saved_at"] = 0.0
     st.session_state["recorded_frame_count"] = 0
+    st.session_state["recording_output_fps"] = safe_output_fps
+    st.session_state["recording_sample_interval_seconds"] = float(sample_interval_seconds)
     st.session_state["recording_fall_points"] = []
 
 
@@ -161,7 +188,9 @@ def finalize_recording_session() -> None:
     frame_count = int(st.session_state.get("recorded_frame_count", 0))
     if path_text and started_at is not None and frame_count > 0:
         path = Path(path_text)
-        output_fps = max(1.0 / RECORDING_SAMPLE_INTERVAL_SECONDS, 1.0)
+        output_fps = float(st.session_state.get("recording_output_fps") or 0.0)
+        if output_fps <= 0:
+            output_fps = default_recording_fps()
         fall_points = list(st.session_state.get("recording_fall_points", []))
         markers = {
             "video_file": path.name,
@@ -178,6 +207,8 @@ def finalize_recording_session() -> None:
     st.session_state["recording_started_at"] = None
     st.session_state["recording_last_saved_at"] = 0.0
     st.session_state["recorded_frame_count"] = 0
+    st.session_state["recording_output_fps"] = 0.0
+    st.session_state["recording_sample_interval_seconds"] = RECORDING_SAMPLE_INTERVAL_SECONDS
     st.session_state["recording_fall_points"] = []
 
 
@@ -188,16 +219,21 @@ def record_annotated_frame(frame: Any, state: str = "", summary: str = "") -> No
 
     now = time.perf_counter()
     last_saved_at = float(st.session_state.get("recording_last_saved_at", 0.0))
-    if not should_record_frame(now, last_saved_at, RECORDING_SAMPLE_INTERVAL_SECONDS):
+    sample_interval_seconds = float(
+        st.session_state.get("recording_sample_interval_seconds", RECORDING_SAMPLE_INTERVAL_SECONDS)
+    )
+    if not should_record_frame(now, last_saved_at, sample_interval_seconds):
         return
 
-    output_fps = max(1.0 / RECORDING_SAMPLE_INTERVAL_SECONDS, 1.0)
+    output_fps = float(st.session_state.get("recording_output_fps") or 0.0)
+    if output_fps <= 0:
+        output_fps = default_recording_fps()
     writer = st.session_state.get("recording_writer")
     if writer is None:
         height, width = frame.shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(path_text, fourcc, output_fps, (width, height))
-        if not writer.isOpened():
+        Path(path_text).parent.mkdir(parents=True, exist_ok=True)
+        writer = create_recording_writer(path_text, output_fps, (width, height))
+        if writer is None:
             st.session_state["recording_writer"] = None
             return
         st.session_state["recording_writer"] = writer
@@ -207,6 +243,14 @@ def record_annotated_frame(frame: Any, state: str = "", summary: str = "") -> No
     append_recording_fall_point(st.session_state, recorded_frame_index, state, summary, output_fps)
     st.session_state["recording_last_saved_at"] = now
     st.session_state["recorded_frame_count"] = recorded_frame_index + 1
+
+
+def video_source_recording_fps(source: Path) -> float:
+    capture = cv2.VideoCapture(str(source))
+    try:
+        return source_fps(capture)
+    finally:
+        capture.release()
 
 
 def save_uploaded_video(uploaded_file: Any) -> Path:
@@ -291,8 +335,8 @@ def process_next_frame(
     if not capture.isOpened():
         message_slot.error("无法打开输入源，请先完成预览检查。")
         st.session_state["running"] = False
+        finalize_recording_session()
         if not is_video_file:
-            finalize_recording_session()
             release_camera_capture()
         return
 
@@ -303,14 +347,12 @@ def process_next_frame(
     fps = source_fps(capture)
     st.session_state["input_fps"] = fps
 
-    pipeline = load_pipeline()
-
     ok, frame = capture.read()
     if is_video_file:
         capture.release()
     if not ok:
+        finalize_recording_session()
         if not is_video_file:
-            finalize_recording_session()
             release_camera_capture()
         st.session_state["running"] = False
         st.session_state["video_finished"] = is_video_file
@@ -319,14 +361,15 @@ def process_next_frame(
         render_metrics(metric_slot)
         return
 
+    pipeline = load_pipeline()
+
     started_at = time.perf_counter()
     result = pipeline.process_frame(frame, frame_index=frame_index, fps=fps)
     elapsed = time.perf_counter() - started_at
 
     st.session_state["processing_fps"] = calculate_processing_fps(elapsed)
     annotated_rgb = frame_to_rgb(result.annotated_frame)
-    if not is_video_file:
-        record_annotated_frame(result.annotated_frame, state=result.state, summary=result.summary)
+    record_annotated_frame(result.annotated_frame, state=result.state, summary=result.summary)
     st.session_state["last_frame_rgb"] = annotated_rgb
     frame_slot.image(annotated_rgb, channels="RGB", use_container_width=True)
 
@@ -445,6 +488,8 @@ def main() -> None:
                 st.session_state["running"] = False
                 return
             start_recording_session()
+        else:
+            start_recording_session(output_fps=video_source_recording_fps(source), sample_interval_seconds=0.0)
         ensure_pipeline_loaded(message_slot)
         st.session_state["running"] = True
         st.session_state["video_finished"] = False

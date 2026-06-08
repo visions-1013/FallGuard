@@ -12,3 +12,4 @@ class FallGuardConfig:
     fall_velocity_threshold: float = 120.0
     fall_angle_velocity_threshold: float = 120.0
     lying_velocity_threshold: float = 35.0
+    fall_recovery_seconds: float = 1.0

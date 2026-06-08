@@ -27,6 +27,9 @@ class PoseHistory:
         if features.valid:
             self._frames.append(features)
 
+    def reset(self) -> None:
+        self._frames.clear()
+
     def summary(self) -> HistorySummary:
         if len(self._frames) < 2:
             return HistorySummary(

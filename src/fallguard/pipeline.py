@@ -34,9 +34,18 @@ class FallGuardPipeline:
             fall_velocity_threshold=self.config.fall_velocity_threshold,
             fall_angle_velocity_threshold=self.config.fall_angle_velocity_threshold,
             lying_velocity_threshold=self.config.lying_velocity_threshold,
+            fall_recovery_seconds=self.config.fall_recovery_seconds,
+            low_pose_threshold=self.config.low_pose_threshold,
         )
 
+    def reset_state(self) -> None:
+        self.history.reset()
+        self.estimator.reset()
+
     def process_frame(self, frame: np.ndarray, frame_index: int = 0, fps: float = 30.0) -> PipelineResult:
+        if frame_index == 0:
+            self.reset_state()
+
         detections = self.detector.detect(frame)
         detection = max(detections, key=lambda item: item.confidence, default=None)
         if detection is None:

@@ -1,0 +1,14 @@
+name: fallguard-stgcn
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pytorch>=2.1
+  - torchvision
+  - pytorch-cuda=12.1
+  - pip
+  - pip:
+      - -e git+https://github.com/open-mmlab/mmaction2.git@v1.2.0#egg=mmaction2
+      - -e .[train,dev]

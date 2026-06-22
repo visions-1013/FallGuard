@@ -1,0 +1,13 @@
+overrides:
+  - scene: Coffee_room_01
+    video: video (26)
+    start: 197
+    end: 227
+  - scene: Coffee_room_02
+    video: video (50)
+    start: 1816
+    end: 1852
+  - scene: Coffee_room_02
+    video: video (52)
+    start: 87
+    end: 113

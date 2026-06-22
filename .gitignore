@@ -1,0 +1,29 @@
+# Local datasets and generated artifacts
+datasets/*
+!datasets/README.md
+/data/
+outputs/
+weights/
+checkpoints/
+runs/
+
+# Python and tools
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_tmp*/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local worktrees
+.worktrees/
+.deps/
+.verification/

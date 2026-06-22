@@ -1,0 +1,11 @@
+pose_model: yolo26n-pose.pt
+pose_fps: 20.0
+window_frames: 32
+window_stride: 4
+fall_threshold: 0.5
+recovery_threshold: 0.35
+trigger_windows: 2
+recovery_seconds: 2.0
+cooldown_seconds: 10.0
+max_interpolation_frames: 3
+reset_after_seconds: 0.5

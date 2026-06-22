@@ -1,0 +1,20 @@
+dataset_root: datasets
+manifest_path: data/manifests/le2i.csv
+pose_cache_dir: data/processed/poses
+expected_videos: 190
+expected_supervised_videos: 130
+expected_excluded_videos: 60
+pose_fps: 20.0
+window_frames: 32
+window_stride: 4
+annotated_scenes:
+  - Coffee_room_01
+  - Coffee_room_02
+  - Home_01
+  - Home_02
+unlabeled_scenes:
+  - Lecture_room
+  - Office
+source_profiles:
+  annotated: "320x240 at 25 FPS"
+  excluded_unlabeled: "24 FPS; 320x240 or 320x180"

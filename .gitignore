@@ -15,6 +15,9 @@ runs/
 *.docx
 *.zip
 /README.txt
+/pictures/0[1-9]_*.png
+/pictures/1[0-9]_*.png
+/pictures/2[0-2]_*.png
 
 # Python and tools
 __pycache__/

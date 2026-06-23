@@ -62,6 +62,26 @@ def test_process_video_writes_video_events_and_summary(tmp_path: Path) -> None:
     assert events[0]["trigger_delay_seconds"] == 0.2
 
 
+def test_process_video_sends_annotated_frames_to_preview_callback(tmp_path: Path) -> None:
+    input_path = tmp_path / "input.avi"
+    _write_video(input_path)
+    previews = []
+
+    process_video(
+        input_path,
+        tmp_path / "output",
+        FakePipeline(),
+        preview=lambda processed, total, result, frame: previews.append(
+            (processed, total, result.state, frame.copy())
+        ),
+    )
+
+    assert len(previews) == 3
+    assert previews[-1][:3] == (3, 3, "non_fall")
+    assert previews[-1][3].shape == (32, 32, 3)
+    assert int(previews[-1][3].sum()) > 0
+
+
 def test_process_video_preserves_partial_file_and_failure_summary(tmp_path: Path) -> None:
     input_path = tmp_path / "input.avi"
     _write_video(input_path)

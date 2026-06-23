@@ -138,8 +138,12 @@ fallguard infer-video input.avi outputs weights/runtime_bundle --device cuda:0
 Tkinter：
 
 ```powershell
-fallguard app weights/runtime_bundle --device cuda:0
+fallguard app
 ```
+
+GUI 默认加载 `outputs/autodl_training/runtime_bundle` 中的 ST-GCN 权重和
+`yolo26n-pose.pt`，自动选择 CPU/GPU。实时检测页显示监控画面、四项关键数据以及标记
+跌倒区间的时间轴；历史记录页可以回放已检测视频。可通过 `--recordings-dir` 更改记录目录。
 
 每次处理生成：
 
@@ -151,6 +155,7 @@ fallguard app weights/runtime_bundle --device cuda:0
 
 输出视频保持原分辨率和FPS，但不保留音频。取消或异常时保留 `.partial.mp4`，并在
 `summary.json` 写明 `cancelled` 或 `failed`，成功后才原子重命名为正式MP4。
+GUI 每次检测会在 `recordings/<检测时间>_<视频名>/` 下单独保存上述三个文件。
 
 ## 模型验收
 

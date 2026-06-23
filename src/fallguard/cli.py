@@ -62,9 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     infer.add_argument("--pose-model", default="yolo26n-pose.pt")
     infer.add_argument("--device")
     app = commands.add_parser("app", help="launch the minimal Tkinter application")
-    _add_path(app, "bundle_dir")
+    _add_path(
+        app,
+        "bundle_dir",
+        nargs="?",
+        default=Path("outputs/autodl_training/runtime_bundle"),
+    )
     app.add_argument("--pose-model", default="yolo26n-pose.pt")
     app.add_argument("--device")
+    _add_path(app, "--recordings-dir", default=Path("recordings"))
     return parser
 
 
@@ -145,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "app":
         from fallguard.ui.tk_app import launch_app
 
-        launch_app(args.bundle_dir, args.pose_model, args.device)
+        launch_app(args.bundle_dir, args.pose_model, args.device, args.recordings_dir)
     return 0
 
 

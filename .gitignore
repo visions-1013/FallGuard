@@ -3,9 +3,18 @@ datasets/*
 !datasets/README.md
 /data/
 outputs/
+recordings/
+yolo*-pose.pt
+Ultralytics/
 weights/
 checkpoints/
 runs/
+
+# Local coursework and reference files
+*.pdf
+*.docx
+*.zip
+/README.txt
 
 # Python and tools
 __pycache__/

@@ -9,9 +9,12 @@ from threading import Event
 from typing import Any
 
 import cv2
+import numpy as np
 
 from fallguard.models.graph import CocoGraph
 from fallguard.types import FallEvent, FrameResult
+
+PreviewCallback = Callable[[int, int, FrameResult, np.ndarray], None]
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,7 @@ def process_video(
     pipeline: Any,
     cancel_event: Event | None = None,
     progress: Callable[[int, int, FrameResult], None] | None = None,
+    preview: PreviewCallback | None = None,
 ) -> VideoProcessingResult:
     input_path = input_path.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -109,10 +113,13 @@ def process_video(
             timestamp = processed / fps
             result = pipeline.process(frame, timestamp)
             all_events.extend(result.events)
-            writer.write(_annotate(frame, result))
+            annotated = _annotate(frame, result)
+            writer.write(annotated)
             processed += 1
             if progress is not None:
                 progress(processed, total_frames, result)
+            if preview is not None:
+                preview(processed, total_frames, result, annotated.copy())
         last_timestamp = max((processed - 1) / fps, 0.0)
         all_events.extend(pipeline.finish(last_timestamp))
     except Exception as exc:  # The summary is the durable error channel for UI/CLI callers.

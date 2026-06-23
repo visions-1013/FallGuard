@@ -13,3 +13,12 @@ def test_cli_exposes_data_training_inference_and_app_commands() -> None:
     assert "evaluate-external" not in help_text
     assert "infer-video" in help_text
     assert "app" in help_text
+
+
+def test_app_command_uses_project_model_and_recording_defaults() -> None:
+    args = build_parser().parse_args(["app"])
+
+    assert str(args.bundle_dir).replace("\\", "/") == (
+        "outputs/autodl_training/runtime_bundle"
+    )
+    assert str(args.recordings_dir).replace("\\", "/") == "recordings"
